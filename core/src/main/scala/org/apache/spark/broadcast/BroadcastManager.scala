@@ -41,7 +41,7 @@ private[spark] class BroadcastManager(
   private def initialize() {
     synchronized {
       if (!initialized) {
-        broadcastFactory = new TorrentBroadcastFactory
+        broadcastFactory = new BarebonesBroadcastFactory
         broadcastFactory.initialize(isDriver, conf, securityManager)
         initialized = true
       }
