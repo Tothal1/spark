@@ -39,7 +39,7 @@ extends Broadcast[T](id) with Logging with Serializable {
   // otherwise I can get it from the block manager
   private val broadcastId = BroadcastBlockId(id)
 
-  @transient private lazy val value_ : T = readBroadcastValue(broadcastId)
+  @transient private lazy val value_ : T = readBroadcastBlocks(broadcastId)
 
 
   private val numBlocks: Int = writeBroadcastBlocks(obj)
