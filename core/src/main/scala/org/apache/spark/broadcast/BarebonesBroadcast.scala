@@ -42,7 +42,8 @@ extends Broadcast[T](id) with Logging with Serializable {
   @transient private lazy val value_ : T = readBroadcastValue(broadcastId)
 
 
-  writeBroadcastValue(obj)
+  private val numBlocks: Int = writeBroadcastBlocks(obj)
+  // writeBroadcastValue(obj) send the value only
   override protected def getValue() = {
     value_
   }
@@ -65,29 +66,85 @@ extends Broadcast[T](id) with Logging with Serializable {
       case None =>
         throw new SparkException("Value was not found either locally or remotely")
     }
-    //  return value
-    //   private[spark] class BlockResult(
-    //   val data: Iterator[Any],
-    //   val readMethod: DataReadMethod.Value,
-    //   val bytes: Long)
   }
 
   private def writeBroadcastValue(value: T) {
+    logInfo("writing broadcast value to block manager")
     val bm = SparkEnv.get.blockManager
-    val err = bm.putSingle(broadcastId, obj, StorageLevel.MEMORY_AND_DISK, tellMaster = true)
+    val err = bm.putSingle(broadcastId, obj, StorageLevel.MEMORY_AND_DISK, true)
     if (err == false) {
       throw new SparkException("couldn't save broadcast value or block already stored")
     }
   }
 
-  override protected def doUnpersist(blocking: Boolean) {
+  private def writeBroadcastBlocks(value: T): Int = {
+    import StorageLevel._
     val bm = SparkEnv.get.blockManager
-    bm.removeBlock(BroadcastBlockId(id), true)
+    val startTimeMs = System.currentTimeMillis
+    val blockSize = 1024 * 1024 * 1024 * 4
+    val blocks =
+      TorrentBroadcast.blockifyObject(value, blockSize, SparkEnv.get.serializer, None)
+    blocks.zipWithIndex.foreach { case (block, i) =>
+      val pieceId = BroadcastBlockId(id, "block" + i)
+      val bytes = new ChunkedByteBuffer(block.duplicate())
+      if (!bm.putBytes(pieceId, bytes, MEMORY_AND_DISK_SER, true)) {
+        throw new SparkException(s"Failed to store $pieceId of $broadcastId in local BlockManager")
+      }
+    }
+    logInfo("Writing broadcast blocks with barebones took " + Utils.getUsedTimeMs(startTimeMs))
+    blocks.length
+  }
+
+
+  // this piece of code will not guarantee that the value will be stored locally for future use
+  private def readBroadcastBlocks(value: T): T = Utils.tryOrIOException {
+    // Fetch chunks of data. Note that all these chunks are stored in the BlockManager and reported
+    // to the driver, so other executors can pull these chunks from this executor as well.
+    val blocks = new Array[BlockData](numBlocks)
+    val bm = SparkEnv.get.blockManager
+
+    for (pid <- Random.shuffle(Seq.range(0, numBlocks))) {
+      val pieceId = BroadcastBlockId(id, "piece" + pid)
+      logDebug(s"Reading block $pieceId of $broadcastId with barebones")
+      // First try getLocalBytes because there is a chance that previous attempts to fetch the
+      // broadcast blocks have already fetched some of the blocks. In that case, some blocks
+      // would be available locally (on this executor).
+      bm.getLocalBytes(pieceId) match {
+        case Some(block) =>
+          blocks(pid) = block
+        case None =>
+          bm.getRemoteBytes(pieceId) match {
+            case Some(b) =>
+              // We found the block from remote executors/driver's BlockManager, so put the block
+              // in this executor's BlockManager.
+              if (!bm.putBytes(pieceId, b, StorageLevel.MEMORY_AND_DISK_SER, tellMaster = true)) {
+                throw new SparkException(
+                  s"Failed to store $pieceId of $broadcastId in local BlockManager")
+              }
+              blocks(pid) = new ByteBufferBlockData(b, true)
+            case None =>
+              throw new SparkException(s"Failed to get $pieceId of $broadcastId")
+          }
+      }
+    }
+    logInfo("Started reading broadcast variable " + id)
+    val startTimeMs = System.currentTimeMillis()
+    logInfo("Reading broadcast variable " + id + " took" + Utils.getUsedTimeMs(startTimeMs))
+    val obj = TorrentBroadcast.unBlockifyObject[T](
+                blocks.map(_.toInputStream()), SparkEnv.get.serializer, None)
+    obj
+  }
+
+  override protected def doUnpersist(blocking: Boolean) {
+    // val bm = SparkEnv.get.blockManager
+    // bm.removeBlock(BroadcastBlockId(id), true)
+    SparkEnv.get.blockManager.master.removeBroadcast(id, false, blocking)
   }
 
   override protected def doDestroy(blocking: Boolean) {
-    val bm = SparkEnv.get.blockManager
-    bm.removeBlock(BroadcastBlockId(id), true)
+    // val bm = SparkEnv.get.blockManager
+    // bm.removeBlock(BroadcastBlockId(id), true)
+    SparkEnv.get.blockManager.master.removeBroadcast(id, true, blocking)
   }
 }
 
