@@ -39,7 +39,7 @@ extends Broadcast[T](id) with Logging with Serializable {
   // otherwise I can get it from the block manager
   private val broadcastId = BroadcastBlockId(id)
 
-  @transient private lazy val value_ : T = readBroadcastBlocks(broadcastId)
+  @transient private lazy val value_ : T = readBroadcastBlocks()
 
 
   private val numBlocks: Int = writeBroadcastBlocks(obj)
@@ -97,7 +97,7 @@ extends Broadcast[T](id) with Logging with Serializable {
 
 
   // this piece of code will not guarantee that the value will be stored locally for future use
-  private def readBroadcastBlocks(value: T): T = Utils.tryOrIOException {
+  private def readBroadcastBlocks(): T = Utils.tryOrIOException {
     // Fetch chunks of data. Note that all these chunks are stored in the BlockManager and reported
     // to the driver, so other executors can pull these chunks from this executor as well.
     val blocks = new Array[BlockData](numBlocks)
