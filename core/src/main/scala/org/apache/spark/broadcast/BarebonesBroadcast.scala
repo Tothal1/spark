@@ -39,6 +39,8 @@ extends Broadcast[T](id) with Logging with Serializable {
   // otherwise I can get it from the block manager
   private val broadcastId = BroadcastBlockId(id)
 
+  // transient here means that even though the object itself can be serialized, it will not store the value,
+  // this is wanted because we already store the value in the block manager
   @transient private lazy val value_ : T = readBroadcastBlocks()
 
 
@@ -46,6 +48,10 @@ extends Broadcast[T](id) with Logging with Serializable {
   // writeBroadcastValue(obj) send the value only
   override protected def getValue() = {
     value_
+  }
+
+  private def pushInitialBlocks() = {
+    
   }
 
   private def readBroadcastValue(broadcastId: BroadcastBlockId): T = Utils.tryOrIOException {
