@@ -50,9 +50,18 @@ extends Broadcast[T](id) with Logging with Serializable {
     value_
   }
 
-  private def pushInitialBlocks() = {
-    
+  private def pushInitialBlocks(blocks Array[ByteBuffer]) = {
+    peers = getPeers(true) // get peer nodes so we can send the blocks to them
+    val i = 0
+    // for each node send a piece
+    peers.foreach {
+      if (i >= blocks.size) {
+        i = 0;
+      }
+       
+    }
   }
+
 
   private def readBroadcastValue(broadcastId: BroadcastBlockId): T = Utils.tryOrIOException {
     logInfo("Started reading broadcast variable " + id)
