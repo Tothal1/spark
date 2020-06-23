@@ -28,6 +28,7 @@ import scala.util.Random
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
+import org.apache.spark.network.buffer.NioManagedBuffer
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.storage._
 import org.apache.spark.util.Utils
@@ -39,7 +40,8 @@ extends Broadcast[T](id) with Logging with Serializable {
   // otherwise I can get it from the block manager
   private val broadcastId = BroadcastBlockId(id)
 
-  // transient here means that even though the object itself can be serialized, it will not store the value,
+  // transient here means that even though the
+  // object itself can be serialized, it will not store the value,
   // this is wanted because we already store the value in the block manager
   @transient private lazy val value_ : T = readBroadcastBlocks()
 
@@ -50,16 +52,30 @@ extends Broadcast[T](id) with Logging with Serializable {
     value_
   }
 
-  private def pushInitialBlocks(blocks Array[ByteBuffer]) = {
-    peers = getPeers(true) // get peer nodes so we can send the blocks to them
-    val i = 0
+  private def pushInitialBlocks(blocks: Array[ByteBuffer]) = {
+    var i = 0
+    val bm = SparkEnv.get.blockManager
+    val peers = bm.getPeers(true) // get peer nodes so we can send the blocks to them
+    val bt = bm.blockTransferService
+
     // for each node send a piece
-    peers.foreach {
+    peers.foreach( peer => {
       if (i >= blocks.size) {
         i = 0;
       }
-       
-    }
+      val pieceId = BroadcastBlockId(id, "block" + i)
+      val buffer = new NioManagedBuffer(blocks(i))
+      bt.uploadBlock(
+          peer.host,
+          peer.port,
+          peer.executorId,
+          pieceId,
+          buffer,
+          StorageLevel.MEMORY_AND_DISK,
+          scala.reflect.classTag[NioManagedBuffer]
+          )
+    i = i + 1}
+    )
   }
 
 
@@ -96,7 +112,10 @@ extends Broadcast[T](id) with Logging with Serializable {
     import StorageLevel._
     val bm = SparkEnv.get.blockManager
     val startTimeMs = System.currentTimeMillis
-    val blockSize = 1024 * 1024 * 1024 * 4
+    val blockSize = 1024 * 1024 * 4
+    if (!bm.putSingle(broadcastId, value, MEMORY_AND_DISK, tellMaster = false)) {
+      throw new SparkException(s"Failed to store $broadcastId in BlockManager")
+    }
     val blocks =
       TorrentBroadcast.blockifyObject(value, blockSize, SparkEnv.get.serializer, None)
     blocks.zipWithIndex.foreach { case (block, i) =>
@@ -106,6 +125,7 @@ extends Broadcast[T](id) with Logging with Serializable {
         throw new SparkException(s"Failed to store $pieceId of $broadcastId in local BlockManager")
       }
     }
+    pushInitialBlocks(blocks)
     logInfo("Writing broadcast blocks with barebones took " + Utils.getUsedTimeMs(startTimeMs))
     blocks.length
   }
@@ -115,11 +135,21 @@ extends Broadcast[T](id) with Logging with Serializable {
   private def readBroadcastBlocks(): T = Utils.tryOrIOException {
     // Fetch chunks of data. Note that all these chunks are stored in the BlockManager and reported
     // to the driver, so other executors can pull these chunks from this executor as well.
-    val blocks = new Array[BlockData](numBlocks)
+    val startTimeMs = System.currentTimeMillis()
     val bm = SparkEnv.get.blockManager
 
+     bm.getLocalValues(broadcastId) match {
+      case Some(blockResult) =>
+        if (blockResult.data.hasNext) {
+          val x = blockResult.data.next().asInstanceOf[T]
+          logInfo("Reading broadcast variable " + id + " took" + Utils.getUsedTimeMs(startTimeMs))
+          x
+        }
+        case None =>
+      }
+    val blocks = new Array[BlockData](numBlocks)
     for (pid <- Random.shuffle(Seq.range(0, numBlocks))) {
-      val pieceId = BroadcastBlockId(id, "piece" + pid)
+      val pieceId = BroadcastBlockId(id, "block" + pid)
       logDebug(s"Reading block $pieceId of $broadcastId with barebones")
       // First try getLocalBytes because there is a chance that previous attempts to fetch the
       // broadcast blocks have already fetched some of the blocks. In that case, some blocks
@@ -134,19 +164,23 @@ extends Broadcast[T](id) with Logging with Serializable {
               // in this executor's BlockManager.
               if (!bm.putBytes(pieceId, b, StorageLevel.MEMORY_AND_DISK_SER, tellMaster = true)) {
                 throw new SparkException(
-                  s"Failed to store $pieceId of $broadcastId in local BlockManager")
+                  s"Failed to store $pieceId of $broadcastId in local BlockManager with barebones")
               }
               blocks(pid) = new ByteBufferBlockData(b, true)
             case None =>
-              throw new SparkException(s"Failed to get $pieceId of $broadcastId")
+              throw new SparkException(s"Failed to get $pieceId of $broadcastId with barebones")
           }
       }
     }
-    logInfo("Started reading broadcast variable " + id)
-    val startTimeMs = System.currentTimeMillis()
-    logInfo("Reading broadcast variable " + id + " took" + Utils.getUsedTimeMs(startTimeMs))
+    logInfo("Started reading broadcast variable " + id + "with barebones")
+    logInfo("Reading broadcast variable " + id + " took" +
+                Utils.getUsedTimeMs(startTimeMs) + "with barebones")
     val obj = TorrentBroadcast.unBlockifyObject[T](
                 blocks.map(_.toInputStream()), SparkEnv.get.serializer, None)
+    if (!bm.putSingle(broadcastId, obj, StorageLevel.MEMORY_AND_DISK, tellMaster = false)) {
+                throw new SparkException(s"Failed to store $broadcastId in BlockManager")
+    }
+
     obj
   }
 
