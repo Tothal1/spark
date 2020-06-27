@@ -29,7 +29,7 @@ import scala.util.Random
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
-import org.apache.spark.network.buffer.NettyManagedBuffer
+import org.apache.spark.network.buffer.NioManagedBuffer
 import org.apache.spark.serializer.Serializer
 import org.apache.spark.storage._
 import org.apache.spark.util.Utils
@@ -65,7 +65,8 @@ extends Broadcast[T](id) with Logging with Serializable {
         i = 0;
       }
       val pieceId = BroadcastBlockId(id, "block" + i)
-      val buffer = new NettyManagedBuffer(Unpooled.wrappedBuffer(blocks(i)));
+      // val buffer = new NettyManagedBuffer(Unpooled.wrappedBuffer(blocks(i)));
+      val buffer = new NioManagedBuffer(blocks(i))
       bt.uploadBlockSync(
           peer.host,
           peer.port,
@@ -73,7 +74,7 @@ extends Broadcast[T](id) with Logging with Serializable {
           pieceId,
           buffer,
           StorageLevel.MEMORY_AND_DISK,
-          scala.reflect.classTag[NettyManagedBuffer]
+          scala.reflect.classTag[ByteBuffer]
           )
     i = i + 1}
     )
