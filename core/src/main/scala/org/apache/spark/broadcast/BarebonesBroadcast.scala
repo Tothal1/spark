@@ -65,7 +65,7 @@ extends Broadcast[T](id) with Logging with Serializable {
       }
       val pieceId = BroadcastBlockId(id, "block" + i)
       val buffer = new NioManagedBuffer(blocks(i))
-      bt.uploadBlock(
+      bt.uploadBlockSync(
           peer.host,
           peer.port,
           peer.executorId,
