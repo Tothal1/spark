@@ -45,13 +45,13 @@ extends Broadcast[T](id) with Logging with Serializable {
   // transient here means that even though the
   // object itself can be serialized, it will not store the value,
   // this is wanted because we already store the value in the block manager
-  @transient private lazy val value_ : T = readBroadcastBlocks()
+  @transient private lazy val _value : T = readBroadcastBlocks()
 
 
   private val numBlocks: Int = writeBroadcastBlocks(obj)
   // writeBroadcastValue(obj) send the value only
   override protected def getValue() = {
-    value_
+    _value
   }
 
   private def pushInitialBlocks(blocks: Array[ByteBuffer]) = {
@@ -179,6 +179,7 @@ extends Broadcast[T](id) with Logging with Serializable {
     logInfo("Started reading broadcast variable " + id + "with barebones")
     logInfo("Reading broadcast variable " + id + " took" +
                 Utils.getUsedTimeMs(startTimeMs) + "with barebones")
+    try {
     val obj = TorrentBroadcast.unBlockifyObject[T](
                 blocks.map(_.toInputStream()), SparkEnv.get.serializer, None)
     if (!bm.putSingle(broadcastId, obj, StorageLevel.MEMORY_AND_DISK, tellMaster = false)) {
@@ -186,6 +187,9 @@ extends Broadcast[T](id) with Logging with Serializable {
     }
 
     obj
+    } finally {
+              blocks.foreach(_.dispose())
+            }
   }
 
   override protected def doUnpersist(blocking: Boolean) {
@@ -204,8 +208,8 @@ extends Broadcast[T](id) with Logging with Serializable {
 
 class BarebonesBroadcastFactory extends BroadcastFactory {
   override def initialize(isDriver: Boolean, conf: SparkConf, securityMgr: SecurityManager) { }
-  def newBroadcast[T: ClassTag](value_ : T, isLocal: Boolean, id: Long): Broadcast[T]
-  = new BarebonesBroadcast[T](value_, id)
+  def newBroadcast[T: ClassTag](_value : T, isLocal: Boolean, id: Long): Broadcast[T]
+  = new BarebonesBroadcast[T](_value, id)
   override def stop() { }
   override def unbroadcast(id: Long, removeFromDriver: Boolean, blocking: Boolean) {
     SparkEnv.get.blockManager.removeBlock(BroadcastBlockId(id), true)
