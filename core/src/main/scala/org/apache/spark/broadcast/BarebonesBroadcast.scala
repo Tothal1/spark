@@ -116,7 +116,7 @@ extends Broadcast[T](id) with Logging with Serializable {
     import StorageLevel._
     val bm = SparkEnv.get.blockManager
     val startTimeMs = System.currentTimeMillis
-    val blockSize = 1024 * 1024 * 4
+    val blockSize = SparkEnv.get.conf.getSizeAsKb("spark.broadcast.blockSize", "4m").toInt * 1024
     if (!bm.putSingle(broadcastId, value, MEMORY_AND_DISK, tellMaster = false)) {
       throw new SparkException(s"Failed to store $broadcastId in BlockManager")
     }
