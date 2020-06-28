@@ -75,7 +75,7 @@ extends Broadcast[T](id) with Logging with Serializable {
           peer.executorId,
           pieceId,
           buffer,
-          StorageLevel.MEMORY_AND_DISK,
+          StorageLevel.MEMORY_AND_DISK_SER,
           scala.reflect.classTag[ByteBuffer]
           )
     i = i + 1}
