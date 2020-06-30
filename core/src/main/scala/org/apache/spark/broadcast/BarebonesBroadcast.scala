@@ -42,7 +42,7 @@ extends Broadcast[T](id) with Logging with Serializable {
   // object itself can be serialized, it will not store the value,
   // this is wanted because we already store the value in the block manager
   @transient private lazy val _value : T = readBroadcastBlocks()
-  
+
   // if the value is local, I can just do return value
   // otherwise I can get it from the block manager
   private val broadcastId = BroadcastBlockId(id)
@@ -53,6 +53,32 @@ extends Broadcast[T](id) with Logging with Serializable {
   // writeBroadcastValue(obj) send the value only
   override protected def getValue() = {
     _value
+  }
+
+  /** Used by the JVM when serializing this object. */
+  // added later as a test
+  private def writeObject(out: ObjectOutputStream): Unit = Utils.tryOrIOException {
+    assertValid()
+    out.defaultWriteObject()
+  }
+
+    /**
+   * If running in a task, register the given block's locks for release upon task completion.
+   * Otherwise, if not running in a task then immediately release the lock.
+   */
+  private def releaseLock(blockId: BlockId): Unit = {
+    val blockManager = SparkEnv.get.blockManager
+    Option(TaskContext.get()) match {
+      case Some(taskContext) =>
+        taskContext.addTaskCompletionListener[Unit](_ => blockManager.releaseLock(blockId))
+      case None =>
+        // This should only happen on the driver, where broadcast variables may be accessed
+        // outside of running tasks (e.g. when computing rdd.partitions()). In order to allow
+        // broadcast variables to be garbage collected we need to free the reference here
+        // which is slightly unsafe but is technically okay because broadcast variables aren't
+        // stored off-heap.
+        blockManager.releaseLock(blockId)
+    }
   }
 
   private def pushInitialBlocks(blocks: Array[ByteBuffer]) = {
@@ -82,34 +108,35 @@ extends Broadcast[T](id) with Logging with Serializable {
   }
 
 
-  private def readBroadcastValue(broadcastId: BroadcastBlockId): T = Utils.tryOrIOException {
-    logInfo("Started reading broadcast variable " + id)
-    val bm = SparkEnv.get.blockManager
-    val startTimeMs = System.currentTimeMillis()
-    // this gets the value either remotely or locally
-    // this can fail
-    bm.get(broadcastId) match {
-      case Some(blockResult) =>
-        if (blockResult.data.hasNext) {
-          val x = blockResult.data.next().asInstanceOf[T]
-          logInfo("Reading broadcast variable " + id + " took" + Utils.getUsedTimeMs(startTimeMs))
-          x
-        } else {
-          throw new SparkException("blockResult has no next") // this should never happen
-        }
-      case None =>
-        throw new SparkException("Value was not found either locally or remotely")
-    }
-  }
+  // private def readBroadcastValue(broadcastId: BroadcastBlockId): T = Utils.tryOrIOException {
+  //   logInfo("Started reading broadcast variable " + id)
+  //   val bm = SparkEnv.get.blockManager
+  //   val startTimeMs = System.currentTimeMillis()
+  //   // this gets the value either remotely or locally
+  //   // this can fail
+  //   bm.get(broadcastId) match {
+  //     case Some(blockResult) =>
+  //       if (blockResult.data.hasNext) {
+  //         val x = blockResult.data.next().asInstanceOf[T]
+  //         logInfo("Reading broadcast variable " + id +
+  //                    " took" + Utils.getUsedTimeMs(startTimeMs))
+  //         x
+  //       } else {
+  //         throw new SparkException("blockResult has no next") // this should never happen
+  //       }
+  //     case None =>
+  //       throw new SparkException("Value was not found either locally or remotely")
+  //   }
+  // }
 
-  private def writeBroadcastValue(value: T) {
-    logInfo("writing broadcast value to block manager")
-    val bm = SparkEnv.get.blockManager
-    val err = bm.putSingle(broadcastId, obj, StorageLevel.MEMORY_AND_DISK, true)
-    if (err == false) {
-      throw new SparkException("couldn't save broadcast value or block already stored")
-    }
-  }
+  // private def writeBroadcastValue(value: T) {
+  //   logInfo("writing broadcast value to block manager")
+  //   val bm = SparkEnv.get.blockManager
+  //   val err = bm.putSingle(broadcastId, obj, StorageLevel.MEMORY_AND_DISK, true)
+  //   if (err == false) {
+  //     throw new SparkException("couldn't save broadcast value or block already stored")
+  //   }
+  // }
 
   private def writeBroadcastBlocks(value: T): Int = {
     import StorageLevel._
@@ -147,6 +174,7 @@ extends Broadcast[T](id) with Logging with Serializable {
         case Some(blockResult) =>
           if (blockResult.data.hasNext) {
             val x = blockResult.data.next().asInstanceOf[T]
+            releaseLock(broadcastId)
             logInfo("Reading broadcast variable " + id + " took" + Utils.getUsedTimeMs(startTimeMs))
             x
           }
@@ -162,6 +190,7 @@ extends Broadcast[T](id) with Logging with Serializable {
         bm.getLocalBytes(pieceId) match {
           case Some(block) =>
             blocks(pid) = block
+            releaseLock(pieceId)
           case None =>
             bm.getRemoteBytes(pieceId) match {
               case Some(b) =>
